@@ -1,0 +1,68 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: resumeiq-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: resumeiq
+      POSTGRES_PASSWORD: devpassword
+      POSTGRES_DB: resumeiq
+    ports:
+      - "5433:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./db/init:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U resumeiq"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  server:
+    build: ./server
+    container_name: resumeiq-api
+    restart: unless-stopped
+    environment:
+      PORT: 5001
+      DATABASE_URL: postgresql://resumeiq:devpassword@postgres:5432/resumeiq
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+    ports:
+      - "5001:5001"
+    volumes:
+      - ./server:/app
+      - /app/node_modules
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  worker:
+    build: ./server
+    container_name: resumeiq-worker
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql://resumeiq:devpassword@postgres:5432/resumeiq
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+    volumes:
+      - ./server:/app
+      - /app/node_modules
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: node src/worker.js
+
+  client:
+    build: ./client
+    container_name: resumeiq-web
+    restart: unless-stopped
+    environment:
+      VITE_API_URL: http://localhost:5001
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./client:/app
+      - /app/node_modules
+    depends_on:
+      - server
+
+volumes:
+  pgdata:

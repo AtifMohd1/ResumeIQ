@@ -27,6 +27,7 @@ jobs:
         with:
           role-to-assume: arn:aws:iam::177036897863:role/resumeiq-github-actions
           aws-region: ${{ env.AWS_REGION }}
+          role-skip-session-tagging: true
 
       - name: Login to ECR
         run: aws ecr get-login-password --region ${{ env.AWS_REGION }} | docker login --username AWS --password-stdin ${{ env.ECR_REPO_SERVER }}
@@ -68,6 +69,7 @@ jobs:
         with:
           role-to-assume: arn:aws:iam::177036897863:role/resumeiq-github-actions
           aws-region: ${{ env.AWS_REGION }}
+          role-skip-session-tagging: true
 
       - name: Setup Node
         uses: actions/setup-node@v4

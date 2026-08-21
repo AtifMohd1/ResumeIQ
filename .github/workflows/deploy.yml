@@ -1,0 +1,88 @@
+name: Deploy ResumeIQ
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION: us-east-1
+  ECR_REPO_SERVER: 177036897863.dkr.ecr.us-east-1.amazonaws.com/resumeiq-server
+  ECS_CLUSTER: resumeiq-cluster
+  S3_BUCKET: resumeiq-frontend-177036897863
+  CLOUDFRONT_DISTRIBUTION_ID: E2N33H2QOS0ARJ
+
+jobs:
+  deploy-backend:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::177036897863:role/resumeiq-github-actions
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to ECR
+        run: aws ecr get-login-password --region ${{ env.AWS_REGION }} | docker login --username AWS --password-stdin ${{ env.ECR_REPO_SERVER }}
+
+      - name: Build and push server image
+        run: |
+          cd server
+          docker buildx build --platform linux/amd64 -t ${{ env.ECR_REPO_SERVER }}:${{ github.sha }} -t ${{ env.ECR_REPO_SERVER }}:latest --push .
+
+      - name: Update API task definition
+        run: |
+          aws ecs describe-task-definition --task-definition resumeiq-api --query "taskDefinition" > api-task-def.json
+          NEW_TASK_DEF=$(jq --arg IMAGE "${{ env.ECR_REPO_SERVER }}:${{ github.sha }}" '.containerDefinitions[0].image = $IMAGE | del(.taskDefinitionArn, .revision, .status, .requiresAttributes, .compatibilities, .registeredAt, .registeredBy)' api-task-def.json)
+          echo "$NEW_TASK_DEF" > new-api-task-def.json
+          aws ecs register-task-definition --cli-input-json file://new-api-task-def.json
+
+      - name: Update worker task definition
+        run: |
+          aws ecs describe-task-definition --task-definition resumeiq-worker --query "taskDefinition" > worker-task-def.json
+          NEW_TASK_DEF=$(jq --arg IMAGE "${{ env.ECR_REPO_SERVER }}:${{ github.sha }}" '.containerDefinitions[0].image = $IMAGE | del(.taskDefinitionArn, .revision, .status, .requiresAttributes, .compatibilities, .registeredAt, .registeredBy)' worker-task-def.json)
+          echo "$NEW_TASK_DEF" > new-worker-task-def.json
+          aws ecs register-task-definition --cli-input-json file://new-worker-task-def.json
+
+      - name: Deploy API service
+        run: aws ecs update-service --cluster ${{ env.ECS_CLUSTER }} --service resumeiq-api-service --task-definition resumeiq-api --force-new-deployment
+
+      - name: Deploy worker service
+        run: aws ecs update-service --cluster ${{ env.ECS_CLUSTER }} --service resumeiq-worker-service --task-definition resumeiq-worker --force-new-deployment
+
+  deploy-frontend:
+    runs-on: ubuntu-latest
+    needs: deploy-backend
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::177036897863:role/resumeiq-github-actions
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Build frontend
+        run: |
+          cd client
+          echo "VITE_API_URL=https://d3vh5p9bpa07i3.cloudfront.net" > .env
+          npm install
+          npm run build
+
+      - name: Deploy to S3
+        run: aws s3 sync client/dist/ s3://${{ env.S3_BUCKET }} --delete
+
+      - name: Invalidate CloudFront
+        run: aws cloudfront create-invalidation --distribution-id ${{ env.CLOUDFRONT_DISTRIBUTION_ID }} --paths "/*"
